@@ -1,0 +1,185 @@
+dfSequia=pd.read_csv('Tabla_Sequia.csv')
+dfPIB=pd.read_excel('PIBE_2_Estados.xlsx')
+dfRepda=pd.read_excel('ReportRepda.xlsx')
+
+########### Encontrar cantidad de municipios
+dfEstados=pd.read_excel('Estado_municipios.xlsx')
+
+dfSequia.drop(columns=['Clave del Municipio','Nombre del Municipio','Unnamed: 300','Sequía Moderada (D1)','Sequía Severa (D2)','Sequía Excepcional (D4)','Sequía Extrema (D3)','Anormalmente Seco (D0)','Total (D0 a D4)'],inplace=True)
+dfSequia.replace({'Anormalmente Seco':0,'Sequía Excepcional':0,'Sequía Moderada':0,'Sequía Severa':1,'Sequía Extrema':1},inplace=True)
+dfSequia.fillna(0,inplace=True)
+dfSequia=dfSequia.groupby(['Entidad']).sum().reset_index()
+
+dfSequia=dfSequia.T.drop(columns=[0])
+dfSequia.columns = dfSequia.iloc[0]
+dfSequia.drop(index=dfSequia.index[0],axis=0,inplace=True)
+dfSequia.reset_index(inplace=True)
+
+dfSequia['index']=dfSequia['index'].apply(lambda x:x[-2:])
+dfSequia=dfSequia.groupby('index').mean().reset_index()
+
+dfSequia=dfSequia.melt(id_vars=["index"],
+                       var_name="Estado",
+                       value_name="Value")
+
+dfRepdaLocal=dfRepda[dfRepda['Autoridad que emite el acto'].str.c
+dfRepdaLocal['Estado']=dfRepdaLocal['Autoridad que emite el acto'].apply(lambda x: x.split()[-1])
+dfRepdaLocal['Concesion']=1
+dfRepdaLocal=dfRepdaLocal.groupby([pd.Grouper(key='Fecha de registro',freq='Y'),'Estado']).agg({'Concesion':'sum'}).reset_index()
+dfRepdaLocal=dfRepdaLocal[dfRepdaLocal['Fecha de registro']>datetime(2002,12,31)]
+
+
+def remove_accent(word):
+    trans_tab = dict.fromkeys(map(ord, u'\u0301\u0308'), None)
+    word = unicodedata.normalize('NFKC', unicodedata.normalize('NFKD', word).translate(trans_tab))
+    return word
+dfPIB=dfPIB.melt(id_vars=['Estados'],var_name='date',value_name='Value')
+dfPIB['Estados']=dfPIB['Estados'].apply(lambda x: remove_accent(x))
+
+dfEstados['Estado'] = dfEstados['Estado'].apply(lambda x: remove_accent(x))
+dfPIB['date'] = dfPIB['date'].apply(lambda x: x[-2:])
+dfRepdaLocal['Fecha de registro'] = dfRepdaLocal['Fecha de registro'].astype('str').apply(lambda x: x[2:4])
+dfExport = pd.read_excel('export1.xlsx')
+
+import pandas as pd
+import numpy as np
+from scipy.stats import pearsonr
+from sklearn.model_selection import train_test_split
+from sklearn import metrics
+from sklearn.metrics import r2_score
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import RidgeCV
+from sklearn.linear_model import Lasso
+from sklearn.linear_model import ElasticNet
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from statsmodels.stats.anova import anova_lm
+from scipy import stats
+import warnings
+import matplotlib.pyplot as plt
+from matplotlib import style
+import seaborn as sns
+
+plt.rcParams['image.cmap'] = "bwr"
+#plt.rcParams['figure.dpi'] = "100"
+plt.rcParams['savefig.bbox'] = "tight"
+style.use('ggplot') or plt.style.use('ggplot')
+warnings.filterwarnings('ignore')
+dfExport.fillna(0, inplace=True)
+
+
+#### Analizar correlación de variables
+def tidy_corr_matrix(corr_mat):
+    '''
+    Función para convertir una matriz de correlación de pandas en formato tidy
+    '''
+    corr_mat = corr_mat.stack().reset_index()
+    corr_mat.columns = ['variable_1', 'variable_2', 'r']
+    corr_mat = corr_mat.loc[corr_mat['variable_1'] != corr_mat['variable_2'], :]
+    corr_mat['abs_r'] = np.abs(corr_mat['r'])
+    corr_mat = corr_mat.sort_values('abs_r', ascending=False)
+
+    return (corr_mat)
+
+
+corr_matrix = dfExport.drop(columns=['Unnamed: 0', 'index', 'Estado']).select_dtypes(include=['float64', 'int']).corr(
+    method='pearson')
+#final_corr_matrix=tidy_corr_matrix(corr_matrix)
+
+fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(21, 21))
+
+sns.heatmap(
+    corr_matrix,
+    annot=True,
+    cbar=False,
+    annot_kws={"size": 15},
+    vmin=-1,
+    vmax=1,
+    center=0,
+    cmap=sns.diverging_palette(20, 220, n=200),
+    square=True,
+    ax=ax
+)
+
+ax.set_xticklabels(
+    ax.get_xticklabels(),
+    rotation=45,
+    horizontalalignment='right',
+)
+
+ax.tick_params(labelsize=10)
+
+###Generar DataFrame para el modelo
+X = dfExport.drop(columns=['Unnamed: 0', 'index', 'Estado', 'Value'])
+y = dfExport['Value']
+X_train, X_test, y_train, y_test = train_test_split(X, y.values.reshape(-1, 1), train_size=0.7, random_state=1234,
+                                                    shuffle=True)
+
+#Analisis estadistico con StatsModel
+X_train = sm.add_constant(X_train, prepend=True)
+modelo = sm.OLS(endog=y_train, exog=X_train, )
+modelo = modelo.fit()
+print(modelo.summary())
+X_train.drop(columns='const', inplace=True)
+
+### **Modelo Scikit learn**
+
+#####Generar modelo
+linreg = LinearRegression()
+#linreg=RidgeCV(alphas=[1, 1e3, 1e6],cv=10)
+#linreg=Lasso()
+#linreg=ElasticNet()
+model = linreg.fit(X_train, y_train)
+y_pred = linreg.predict(X_test)
+
+score = r2_score(y_test, y_pred)
+print("r2 score is", score)
+print("mean_sqrd_error", mean_squared_error(y_test, y_pred))
+print("root_mean_squared error", np.sqrt(mean_squared_error(y_test, y_pred)))
+
+###Mostrar coeficientes del modelo de regresión
+regression_model = linreg.coef_
+print("Coeficientes del modelo de regresión lineal:", regression_model)
+print("La intersección del modelo de regresión lineal:", linreg.intercept_)
+
+from mpl_toolkits import mplot3d
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# Creating dataset
+z = y_pred[0]
+x = X_test['PIB']
+y = X_test['Concesion']
+
+# Creating figure
+fig = plt.figure(figsize = (16, 9))
+ax = plt.axes(projection ="3d")
+
+# Add x, y gridlines
+ax.grid(b = True, color ='grey',
+        linestyle ='-.', linewidth = 0.3,
+        alpha = 0.2)
+
+
+# Creating color map
+my_cmap = plt.get_cmap('hsv')
+
+# Creating plot
+sctt = ax.scatter3D(x, y, z,
+                    alpha = 0.8,
+                    c = (x + y + z),
+                    cmap = my_cmap,
+                    marker ='^')
+
+plt.title("simple 3D scatter plot")
+ax.set_xlabel('PIB', fontweight ='bold')
+ax.set_ylabel('Numero de concesiones', fontweight ='bold')
+ax.set_zlabel('Promedio de municipios con sequia extrema', fontweight ='bold')
+fig.colorbar(sctt, ax = ax, shrink = 0.5, aspect = 5)
+
+# show plot
+plt.show()
